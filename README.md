@@ -38,6 +38,26 @@ On a chat turn, when the active embedder is multimodal and the LLM is vision-cap
 
 Two caps bound one turn: at most **5 images** (`MAX_IMAGES_PER_TURN`) and **5 MiB** in total (`MAX_IMAGE_TOTAL_BYTES`). The mime type comes from the point metadata, sniffed with Pillow only when it is missing. The whole path is best-effort: on any failure it returns no images and the `[Image]` text placeholder already in the context keeps the turn working text-only.
 
+<h2>🤝 Integration with the efficient ingestion engine (EffING)</h2>
+
+The image lifecycle is usable identically by both ingestion engines — the core CAT engine (RabbitHole, "old embedding") and the efficient-ingestion engine (EffING) — behind the same hook-driven contract. The pure helpers in `cat.plugins.cat_multimodal_ingestion.ingestion` are the stable import surface:
+
+| Symbol | Role |
+| --- | --- |
+| `collect_document_images` / `strip_image_payload` | Extraction of the parser images before chunking |
+| `image_file_name` | Deterministic image file naming (`<source-stem>_img_<index>_<sha256[:8]><ext>`) |
+| `delete_source_image_files` | Deletion cascade for a source's image files |
+| `is_multimodal_embedder_active` | Multimodal-embedder detection |
+| `build_image_points` | Image-point building (bivalent, see below) |
+
+`build_image_points` is bivalent: `vectors="embed"|"empty"` embeds the images with the active embedder or builds payload-only points (`vector={}`) for a later `embedding` phase; `on_embed_failure="drop"|"keep_empty"` drops a failed embed entirely or keeps it payload-only for a retry. The defaults (`vectors="embed"`, `on_embed_failure="drop"`) are the core behavior.
+
+**Gate-in-callers rule:** the pure functions never gate. The core hook (`rabbithole_collects_document_images`) gates extraction on `is_multimodal_embedder_active`; the EffING engine extracts always and defers the decision to its `embedding` phase.
+
+**EffING-side dedup contract:** the EffING `reembed.py` image parts are expected to call the MmodING helpers instead of re-implementing them locally — `_store_empty_vectors` (reembed.py:200) image part → `build_image_points(vectors="empty")`; `_embed_phase` (reembed.py:258) image part → `build_image_points(vectors="embed", on_embed_failure="keep_empty")`; `_cleanup_orphan_images` (reembed.py:102) → `delete_source_image_files`.
+
+EffING's `ingestion_phase_specs` phase-registration API (live 2026-09-19) is deliberately NOT used by this plugin: the image lifecycle spans the two built-in phases (`parsing_chunking` + `embedding`), and registering a phase would require persisting transient parser images between phases (anti-pattern). The provider pattern (spec + marker + run) documented in EffING's README is the reference if a multimodal-settings marker is ever desired.
+
 <h2>🛠️ Installation:</h2>
 
 <p>1. Clone this repo and copy it on cat plugins folder</p>
