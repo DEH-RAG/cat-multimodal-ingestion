@@ -15,6 +15,30 @@ core ``RabbitHole``, ``StrayCat`` and ``routes/file_manager``:
 
 With this plugin disabled the core returns to upstream parity: no image
 collection, no image points, no image-file cascade, no image recall.
+
+Dual-engine contract (core CAT engine + efficient-ingestion engine)
+-------------------------------------------------------------------
+The image lifecycle is usable identically by both ingestion engines behind the
+same hook-driven contract; the pure helpers in
+``cat.plugins.cat_multimodal_ingestion.ingestion`` are the stable import
+surface:
+
+- ``collect_document_images`` / ``strip_image_payload`` — extraction,
+- ``image_file_name`` — deterministic image file naming,
+- ``delete_source_image_files`` — deletion cascade,
+- ``is_multimodal_embedder_active`` — multimodal-embedder detection,
+- ``build_image_points`` — image-point building (bivalent, see below).
+
+Gate-in-callers rule: the pure functions never gate. The core hook
+(``rabbithole_collects_document_images``) gates extraction on
+``is_multimodal_embedder_active``; the efficient-ingestion engine extracts
+always and defers the decision to its ``embedding`` phase.
+
+Bivalent ``build_image_points`` semantics: ``vectors="embed"|"empty"`` (embed
+the images vs build payload-only points with ``vector={}`` for a later
+``embedding`` phase) and ``on_embed_failure="drop"|"keep_empty"`` (drop a
+failed embed entirely vs keep it payload-only for a retry). The core hook pins
+the core-path semantics explicitly: ``vectors="embed", on_embed_failure="drop"``.
 """
 
 import os
@@ -58,6 +82,10 @@ async def rabbithole_collects_document_images(images: list[dict], docs, cat) -> 
     Runs BEFORE chunking (chunkers may drop the ``image_base64`` metadata).
     Collects one entry per extracted image and strips the transient payload
     from the docs; returns [] when the active embedder is not multimodal.
+
+    This is the gate-in-callers rule in action: the core path gates extraction
+    on ``is_multimodal_embedder_active`` here, while the efficient-ingestion
+    engine extracts always and defers the decision to its ``embedding`` phase.
     """
     if not docs:
         return images
@@ -84,9 +112,17 @@ async def rabbithole_stores_image_points(
 
     Embeds the images via ``embed_images``, saves them as files and returns the
     ``PointStruct`` list; the core appends them to the same collection.
+
+    Pins the core-path semantics of the bivalent ``build_image_points``
+    explicitly: ``vectors="embed"`` (real embedding) and
+    ``on_embed_failure="drop"`` (a failed embed is dropped entirely). The
+    efficient-ingestion engine calls the same helper with
+    ``vectors="empty"`` / ``on_embed_failure="keep_empty"`` for its
+    ``parsing_chunking`` / ``embedding`` phases (see the module docstring).
     """
     return await build_image_points(
         cat, images, source, source_bytes, metadata, file_hash, chat_id,
+        vectors="embed", on_embed_failure="drop",
     )
 
 
