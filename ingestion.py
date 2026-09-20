@@ -19,6 +19,7 @@ import os
 import re
 import time
 import uuid
+from typing import Literal
 
 from langchain_core.documents import Document
 
@@ -163,6 +164,8 @@ async def build_image_points(
     metadata: dict | None,
     file_hash: str | None,
     chat_id: str | None,
+    *,
+    vectors: Literal["embed", "empty"] = "embed",
 ) -> list[PointStruct]:
     """Embed the collected images and build their ``PointStruct`` list.
 
@@ -180,34 +183,58 @@ async def build_image_points(
         metadata: Optional extra metadata carried on every image point.
         file_hash: Hash of the source, stored on the point metadata.
         chat_id: Conversation id when the ingestion is chat-scoped.
+        vectors: ``"embed"`` (default) embeds the images with the active
+            embedder; ``"empty"`` skips embedding entirely and builds the
+            points with ``vector={}`` (the efficient-ingestion
+            ``parsing_chunking`` phase defers embedding to a later phase).
 
     Returns:
-        One ``PointStruct`` per successfully embedded image; failed/skipped
-        image embeds (``None`` vector placeholders) are dropped entirely.
+        One ``PointStruct`` per image: embedded vectors in ``"embed"`` mode
+        (failed/skipped embeds, ``None`` placeholders, are dropped entirely),
+        ``vector={}`` in ``"empty"`` mode.
     """
-    embedder = await cat.lizard.embedder()
     is_image_source = (mimetypes.guess_type(source)[0] or "").startswith("image/")
 
-    if is_image_source:
-        # Uploaded image files: the parser (hi_res) can split the file into
-        # sub-crops. Embed the source file itself as a single whole-image point
-        # (image_file = the source, no derived file) and ignore crops.
-        whole_image = source_bytes if source_bytes is not None else (images[0]["image_bytes"] if images else None)
-        embeds = await _run_in_ingestion_executor(cat, lambda: embedder.embed_images([whole_image])) if whole_image is not None else []
-        files_and_vectors = [(source, embeds[0])] if embeds and embeds[0] is not None else []
+    if vectors == "empty":
+        # Empty-vector mode: the embedder is never resolved and ``embed_images``
+        # is never called. The image files are still saved (same deterministic
+        # names) and one point per image is built with ``vector={}`` so a later
+        # ``embedding`` phase can fill the vectors.
+        if is_image_source:
+            # Uploaded image files: single whole-image point (image_file = the
+            # source, no derived file); source_bytes preferred over the first
+            # parser crop, mirroring the embed mode.
+            whole_image = source_bytes if source_bytes is not None else (images[0]["image_bytes"] if images else None)
+            files_and_vectors = [(source, {})] if whole_image is not None else []
+        else:
+            files_and_vectors = []
+            for idx, img in enumerate(images):
+                img_file = image_file_name(source, idx, img["image_mime_type"], img["image_bytes"])
+                await cat.save_file(img["image_bytes"], img["image_mime_type"], img_file, chat_id)
+                files_and_vectors.append((img_file, {}))
     else:
-        image_vectors = await _run_in_ingestion_executor(
-            cat, lambda: embedder.embed_images([img["image_bytes"] for img in images])
-        )
-        files_and_vectors = []
-        for idx, (img, vector) in enumerate(zip(images, image_vectors)):
-            if vector is None:
-                # A failed/skipped image embed (None placeholder) is dropped
-                # entirely: neither saved as a file nor stored as a point.
-                continue
-            img_file = image_file_name(source, idx, img["image_mime_type"], img["image_bytes"])
-            await cat.save_file(img["image_bytes"], img["image_mime_type"], img_file, chat_id)
-            files_and_vectors.append((img_file, vector))
+        embedder = await cat.lizard.embedder()
+
+        if is_image_source:
+            # Uploaded image files: the parser (hi_res) can split the file into
+            # sub-crops. Embed the source file itself as a single whole-image point
+            # (image_file = the source, no derived file) and ignore crops.
+            whole_image = source_bytes if source_bytes is not None else (images[0]["image_bytes"] if images else None)
+            embeds = await _run_in_ingestion_executor(cat, lambda: embedder.embed_images([whole_image])) if whole_image is not None else []
+            files_and_vectors = [(source, embeds[0])] if embeds and embeds[0] is not None else []
+        else:
+            image_vectors = await _run_in_ingestion_executor(
+                cat, lambda: embedder.embed_images([img["image_bytes"] for img in images])
+            )
+            files_and_vectors = []
+            for idx, (img, vector) in enumerate(zip(images, image_vectors)):
+                if vector is None:
+                    # A failed/skipped image embed (None placeholder) is dropped
+                    # entirely: neither saved as a file nor stored as a point.
+                    continue
+                img_file = image_file_name(source, idx, img["image_mime_type"], img["image_bytes"])
+                await cat.save_file(img["image_bytes"], img["image_mime_type"], img_file, chat_id)
+                files_and_vectors.append((img_file, vector))
 
     return [
         PointStruct(

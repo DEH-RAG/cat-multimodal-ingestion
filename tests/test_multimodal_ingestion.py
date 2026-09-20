@@ -319,6 +319,107 @@ async def test_build_image_points_whole_image_none_embed_skipped(cheshire_cat, m
     assert saved_files == []
 
 
+async def test_build_image_points_empty_vectors_skips_embedding(cheshire_cat, monkeypatch):
+    """``vectors="empty"`` builds payload-only points: the embedder is never
+    resolved and ``embed_images`` is never called; the image file is still
+    saved and the point carries ``vector == {}`` with the usual metadata."""
+    calls: dict = {"embed_images": 0}
+
+    class SpyEmbedder(FakeMultimodalEmbedder):
+        def embed_images(self, images):
+            calls["embed_images"] += 1
+            return super().embed_images(images)
+
+    async def fake_embedder():
+        calls["embedder_resolved"] = True
+        return SpyEmbedder()
+
+    saved_files: list = []
+
+    async def fake_save_file(file_bytes, content_type, source, chat_id=None):
+        saved_files.append((file_bytes, content_type, source, chat_id))
+
+    monkeypatch.setattr(cheshire_cat.lizard, "embedder", fake_embedder)
+    monkeypatch.setattr(cheshire_cat, "save_file", fake_save_file)
+
+    image_points = await ingestion.build_image_points(
+        cheshire_cat, [_image_payload(b"IMG1")],
+        source="test.txt", source_bytes=None, metadata={}, file_hash="hash", chat_id=None,
+        vectors="empty",
+    )
+
+    assert len(image_points) == 1
+    assert image_points[0].vector == {}
+    image_metadata = image_points[0].payload["metadata"]
+    assert image_metadata["image"] is True
+    assert image_metadata["source"] == "test.txt"
+    image_file = image_metadata["image_file"]
+    assert image_file.startswith("test_img_0_")
+    assert image_file.endswith(".jpg")
+
+    # the image was saved as a file, exactly like the embed mode
+    assert saved_files == [(b"IMG1", "image/jpeg", image_file, None)]
+
+    # the embedder was never resolved and embed_images never called
+    assert "embedder_resolved" not in calls
+    assert calls["embed_images"] == 0
+
+
+async def test_build_image_points_empty_vectors_image_source(cheshire_cat, monkeypatch):
+    """``vectors="empty"`` with an image source: single whole-image point with
+    ``image_file = source``, no derived files, ``vector == {}``."""
+    saved_files: list = []
+
+    async def fake_save_file(file_bytes, content_type, source, chat_id=None):
+        saved_files.append((file_bytes, content_type, source, chat_id))
+
+    # the embedder must never be touched in empty mode
+    monkeypatch.setattr(cheshire_cat.lizard, "embedder", None)
+    monkeypatch.setattr(cheshire_cat, "save_file", fake_save_file)
+
+    source_bytes = b"\xff\xd8\xff\xe0" + b"\x00" * 16  # fake jpeg payload
+    # parser crops for the image source (must be ignored)
+    crops = [_image_payload(b"crop1"), _image_payload(b"crop2")]
+
+    image_points = await ingestion.build_image_points(
+        cheshire_cat, crops,
+        source="photo.jpeg", source_bytes=source_bytes, metadata={}, file_hash=None, chat_id=None,
+        vectors="empty",
+    )
+
+    # exactly ONE image point, no derived files
+    assert len(image_points) == 1
+    assert image_points[0].vector == {}
+    assert image_points[0].payload["metadata"]["image_file"] == "photo.jpeg"
+    assert image_points[0].payload["metadata"]["source"] == "photo.jpeg"
+    assert saved_files == []
+
+
+async def test_build_image_points_empty_vectors_without_embedder(cheshire_cat, monkeypatch):
+    """``vectors="empty"`` never touches the embedder: it works even when the
+    lizard exposes none (``cat.lizard = None`` stub) — no crash."""
+    saved_files: list = []
+
+    async def fake_save_file(file_bytes, content_type, source, chat_id=None):
+        saved_files.append((file_bytes, content_type, source, chat_id))
+
+    # ``lizard`` is a read-only property: shadow it at class level so the
+    # empty-vector path provably never resolves an embedder.
+    monkeypatch.setattr(cheshire_cat.__class__, "lizard", None)
+    monkeypatch.setattr(cheshire_cat, "save_file", fake_save_file)
+
+    image_points = await ingestion.build_image_points(
+        cheshire_cat, [_image_payload(b"IMG1")],
+        source="test.txt", source_bytes=None, metadata={}, file_hash="hash", chat_id=None,
+        vectors="empty",
+    )
+
+    assert len(image_points) == 1
+    assert image_points[0].vector == {}
+    assert image_points[0].payload["metadata"]["image"] is True
+    assert saved_files == [(b"IMG1", "image/jpeg", image_points[0].payload["metadata"]["image_file"], None)]
+
+
 # ---------- core wiring: store_documents -> rabbithole_stores_image_points ----------
 
 
