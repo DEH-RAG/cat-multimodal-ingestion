@@ -420,6 +420,102 @@ async def test_build_image_points_empty_vectors_without_embedder(cheshire_cat, m
     assert saved_files == [(b"IMG1", "image/jpeg", image_points[0].payload["metadata"]["image_file"], None)]
 
 
+async def test_build_image_points_keep_empty_embed_failure(cheshire_cat, monkeypatch):
+    """``on_embed_failure="keep_empty"``: a failed/skipped image embed (``None``
+    vector) keeps a payload-only point (file saved, ``vector == {}``) so a later
+    embedding phase can retry it; the successful images embed normally."""
+    saved_files: list = []
+
+    async def fake_save_file(file_bytes, content_type, source, chat_id=None):
+        saved_files.append((file_bytes, content_type, source, chat_id))
+
+    async def fake_embedder():
+        return PartialFailMultimodalEmbedder()
+
+    monkeypatch.setattr(cheshire_cat.lizard, "embedder", fake_embedder)
+    monkeypatch.setattr(cheshire_cat, "save_file", fake_save_file)
+
+    # first image fails to embed (None), second succeeds
+    image_points = await ingestion.build_image_points(
+        cheshire_cat, [_image_payload(b"IMG_FAIL"), _image_payload(b"IMG_OK")],
+        source="test.txt", source_bytes=None, metadata={}, file_hash="hash", chat_id=None,
+        on_embed_failure="keep_empty",
+    )
+
+    # TWO image points: the failed image is kept payload-only
+    assert len(image_points) == 2
+    failed_point, ok_point = image_points
+    assert failed_point.vector == {}
+    assert failed_point.payload["metadata"]["image"] is True
+    assert failed_point.payload["metadata"]["image_file"].startswith("test_img_0_")
+    assert ok_point.vector == [0.1] * 4
+    assert ok_point.payload["metadata"]["image_file"].startswith("test_img_1_")
+
+    # both files were saved (the failed image's file too)
+    assert len(saved_files) == 2
+    assert saved_files[0][2].startswith("test_img_0_")
+    assert saved_files[1][2].startswith("test_img_1_")
+
+
+async def test_build_image_points_keep_empty_whole_image_embed_failure(cheshire_cat, monkeypatch):
+    """Whole-image source with ``on_embed_failure="keep_empty"``: a failed
+    whole-image embed keeps a single payload-only point (``image_file=source``,
+    ``vector == {}``), no derived files."""
+    saved_files: list = []
+
+    async def fake_save_file(file_bytes, content_type, source, chat_id=None):
+        saved_files.append((file_bytes, content_type, source, chat_id))
+
+    async def fake_embedder():
+        return PartialFailMultimodalEmbedder()
+
+    monkeypatch.setattr(cheshire_cat.lizard, "embedder", fake_embedder)
+    monkeypatch.setattr(cheshire_cat, "save_file", fake_save_file)
+
+    source_bytes = b"\xff\xd8\xff\xe0" + b"\x00" * 16  # fake jpeg payload
+    image_points = await ingestion.build_image_points(
+        cheshire_cat, [_image_payload(b"crop")],
+        source="photo.jpeg", source_bytes=source_bytes, metadata={}, file_hash=None, chat_id=None,
+        on_embed_failure="keep_empty",
+    )
+
+    assert len(image_points) == 1
+    assert image_points[0].vector == {}
+    assert image_points[0].payload["metadata"]["image_file"] == "photo.jpeg"
+    assert image_points[0].payload["metadata"]["source"] == "photo.jpeg"
+    assert saved_files == []
+
+
+async def test_build_image_points_drop_embed_failure_explicit(cheshire_cat, monkeypatch):
+    """``on_embed_failure="drop"`` (the default, passed explicitly) drops a
+    failed/skipped image embed entirely: file NOT saved, no point built."""
+    saved_files: list = []
+
+    async def fake_save_file(file_bytes, content_type, source, chat_id=None):
+        saved_files.append((file_bytes, content_type, source, chat_id))
+
+    async def fake_embedder():
+        return PartialFailMultimodalEmbedder()
+
+    monkeypatch.setattr(cheshire_cat.lizard, "embedder", fake_embedder)
+    monkeypatch.setattr(cheshire_cat, "save_file", fake_save_file)
+
+    # first image fails to embed (None), second succeeds
+    image_points = await ingestion.build_image_points(
+        cheshire_cat, [_image_payload(b"IMG_FAIL"), _image_payload(b"IMG_OK")],
+        source="test.txt", source_bytes=None, metadata={}, file_hash="hash", chat_id=None,
+        on_embed_failure="drop",
+    )
+
+    # exactly ONE image point: the failed image is dropped
+    assert len(image_points) == 1
+    assert image_points[0].payload["metadata"]["image_file"].startswith("test_img_1_")
+
+    # the failed image's file was NOT saved (only the successful one)
+    assert len(saved_files) == 1
+    assert saved_files[0][2].startswith("test_img_1_")
+
+
 # ---------- core wiring: store_documents -> rabbithole_stores_image_points ----------
 
 
