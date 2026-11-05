@@ -17,3 +17,7 @@ wheels/
 # Virtual environments
 .venv
 uv.lock
+
+# local agent/tooling files (never commit)
+.sisyphus/
+.claude/
