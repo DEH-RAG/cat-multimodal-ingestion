@@ -31,8 +31,9 @@ surface:
 
 Gate-in-callers rule: the pure functions never gate. The core hook
 (``rabbithole_collects_document_images``) gates extraction on
-``is_multimodal_embedder_active``; the efficient-ingestion engine extracts
-always and defers the decision to its ``embedding`` phase.
+``is_multimodal_embedder_active`` but always strips the parser payload; the
+efficient-ingestion engine extracts always and defers the decision to its
+``embedding`` phase.
 
 Bivalent ``build_image_points`` semantics: ``vectors="embed"|"empty"`` (embed
 the images vs build payload-only points with ``vector={}`` for a later
@@ -80,20 +81,24 @@ async def rabbithole_collects_document_images(images: list[dict], docs, cat) -> 
     """Extract the images produced by multimodal parsers from the parsed docs.
 
     Runs BEFORE chunking (chunkers may drop the ``image_base64`` metadata).
-    Collects one entry per extracted image and strips the transient payload
-    from the docs; returns [] when the active embedder is not multimodal.
+    Collects one entry per extracted image when the active embedder is
+    multimodal, and ALWAYS strips the transient payload from the docs so it can
+    never reach the chunk metadata or the vector DB. Returns the collected
+    images, or the incoming ``images`` unchanged when the embedder is not
+    multimodal.
 
     This is the gate-in-callers rule in action: the core path gates extraction
     on ``is_multimodal_embedder_active`` here, while the efficient-ingestion
     engine extracts always and defers the decision to its ``embedding`` phase.
+    The strip is not gated: it runs for every parsed doc, whatever the embedder.
     """
     if not docs:
         return images
     if not await is_multimodal_embedder_active(cat):
+        strip_image_payload(docs)
         return images
     extracted = collect_document_images(docs)
-    if extracted:
-        strip_image_payload(docs)
+    strip_image_payload(docs)
     return extracted
 
 
