@@ -38,6 +38,18 @@ if __name__ == "__main__":
             },
         )
 
+    def _find_keys(value, key):
+        found = []
+        if isinstance(value, dict):
+            for k, v in value.items():
+                if k == key:
+                    found.append(v)
+                found.extend(_find_keys(v, key))
+        elif isinstance(value, list):
+            for v in value:
+                found.extend(_find_keys(v, key))
+        return found
+
     async def main() -> int:
         checks = 0
         original = multimodal_plugin.is_multimodal_embedder_active
@@ -73,6 +85,39 @@ if __name__ == "__main__":
             assert "image_base64" not in doc.metadata, doc.metadata
             assert doc.metadata["keep"] == "me", doc.metadata
             checks += 3
+
+            # Real parser/chunker shape: the payload is nested in
+            # source_chunks[*].metadata. The recursive strip removes every
+            # image_base64 while preserving text, source_chunks and coordinates.
+            nested = Document(
+                page_content="text",
+                metadata={
+                    "source": "ud4.pdf",
+                    "source_chunks": [
+                        {
+                            "text": "a",
+                            "metadata": {
+                                "image_base64": base64.b64encode(b"one").decode(),
+                                "coordinates": {"x": 1},
+                            },
+                        },
+                        {
+                            "text": "b",
+                            "metadata": {
+                                "image_base64": base64.b64encode(b"two").decode(),
+                                "coordinates": {"x": 2},
+                            },
+                        },
+                    ],
+                },
+            )
+            multimodal_plugin.strip_image_payload([nested])
+            assert _find_keys(nested.metadata, "image_base64") == [], nested.metadata
+            assert nested.metadata["source"] == "ud4.pdf", nested.metadata
+            assert [c["text"] for c in nested.metadata["source_chunks"]] == ["a", "b"]
+            assert nested.metadata["source_chunks"][0]["metadata"]["coordinates"] == {"x": 1}
+            assert nested.metadata["source_chunks"][1]["metadata"]["coordinates"] == {"x": 2}
+            checks += 5
 
             # No docs: the incoming list is returned untouched.
             assert (

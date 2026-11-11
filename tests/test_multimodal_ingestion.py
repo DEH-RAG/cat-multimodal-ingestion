@@ -112,6 +112,42 @@ def test_strip_image_payload_removes_base64():
     assert docs[0].metadata["keep"] == "me"
 
 
+def _find_keys(value, key):
+    found = []
+    if isinstance(value, dict):
+        for k, v in value.items():
+            if k == key:
+                found.append(v)
+            found.extend(_find_keys(v, key))
+    elif isinstance(value, list):
+        for v in value:
+            found.extend(_find_keys(v, key))
+    return found
+
+
+def test_strip_image_payload_removes_nested_source_chunks_base64():
+    docs = [
+        Document(
+            page_content="text",
+            metadata={
+                "source": "ud4.pdf",
+                "source_chunks": [
+                    {"text": "a", "metadata": {"image_base64": "b25l", "coordinates": {"x": 1}}},
+                    {"text": "b", "metadata": {"image_base64": "dHdv", "coordinates": {"x": 2}}},
+                ],
+            },
+        )
+    ]
+
+    ingestion.strip_image_payload(docs)
+
+    assert _find_keys(docs[0].metadata, "image_base64") == []
+    assert docs[0].metadata["source"] == "ud4.pdf"
+    assert [c["text"] for c in docs[0].metadata["source_chunks"]] == ["a", "b"]
+    assert docs[0].metadata["source_chunks"][0]["metadata"]["coordinates"] == {"x": 1}
+    assert docs[0].metadata["source_chunks"][1]["metadata"]["coordinates"] == {"x": 2}
+
+
 # ---------- multimodal detection (used to be RabbitHole._is_multimodal_embedder) ----------
 
 

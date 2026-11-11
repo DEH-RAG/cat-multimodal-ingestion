@@ -94,15 +94,30 @@ def collect_document_images(docs: list[Document]) -> list[dict]:
     return images
 
 
+def _strip_image_payload(value) -> None:
+    """Remove every ``image_base64`` key from a nested dict/list structure."""
+    if isinstance(value, dict):
+        value.pop("image_base64", None)
+        for item in value.values():
+            _strip_image_payload(item)
+    elif isinstance(value, list):
+        for item in value:
+            _strip_image_payload(item)
+
+
 def strip_image_payload(docs: list[Document]) -> None:
     """Drop the transient parser ``image_base64`` payload from the documents.
 
     Called by the plugin after the images have been collected: the payload must
     never reach the text chunk metadata or the vector DB (it would bloat the
     payloads and be forwarded to the LLM on recall).
+
+    The payload is stripped recursively because chunkers copy the whole parser
+    metadata into ``metadata["source_chunks"][*]["metadata"]``, where each chunk
+    ends up carrying a full copy of every page's base64 image payload.
     """
     for doc in docs:
-        doc.metadata.pop("image_base64", None)
+        _strip_image_payload(doc.metadata)
 
 
 def image_file_name(source: str, index: int, mime_type: str, image_bytes: bytes) -> str:
