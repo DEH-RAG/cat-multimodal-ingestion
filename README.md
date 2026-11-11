@@ -19,14 +19,14 @@ With the plugin disabled the core returns to upstream parity: no image collectio
 
 Multimodal parsers (e.g. the PLUS `UnstructuredParser` with `extract_image_block_to_payload=True`) attach each extracted image to the parsed `Document` metadata as `image_base64` + `image_mime_type`. The plugin:
 
-1. collects one entry per image **before chunking** — chunkers may drop that metadata — and strips the transient `image_base64` payload from the documents, so it never reaches the text chunk metadata nor the vector database;
+1. collects one entry per image **before chunking** — chunkers may drop that metadata — and **always** strips the transient `image_base64` payload from the documents, whatever the active embedder, so it never reaches the text chunk metadata nor the vector database;
 2. embeds the images with the active embedder's `embed_images`, dispatched through the `run_in_ingestion_executor` hook (the dedicated lane of the *efficient ingestion* plugin, with a fallback to `asyncio.to_thread`);
 3. saves each image as a file named deterministically after its source (`<source-stem>_img_<index>_<sha256[:8]><ext>`), so the association between an image and the document it came from is recoverable by name;
 4. returns one `PointStruct` per image, carrying `image=True`, `image_file`, `source`, `when`, `hash` and, for chat-scoped ingestion, `chat_id`. The core appends them to the same collection as the text chunks.
 
 An image whose embedding fails or is skipped (a `None` vector placeholder) is dropped entirely: neither saved as a file nor stored as a point. When the **source itself is an image**, the file is embedded as a single whole-image point and the parser's sub-crops are ignored.
 
-Everything is gated on the active embedder being multimodal: the check resolves the embedder to its settings class through the lizard's `ServiceFactory` and asks `is_multimodal()`, falling back to an instance-level check for custom embedders not registered in the factory.
+Collection, embedding and storage are gated on the active embedder being multimodal: the check resolves the embedder to its settings class through the lizard's `ServiceFactory` and asks `is_multimodal()`, falling back to an instance-level check for custom embedders not registered in the factory. The parser-payload strip is never gated: with a text embedder no image is collected, but `image_base64` is still removed from every parsed document.
 
 <h2>🗑️ Deletion cascade</h2>
 
@@ -52,7 +52,7 @@ The image lifecycle is usable identically by both ingestion engines — the core
 
 `build_image_points` is bivalent: `vectors="embed"|"empty"` embeds the images with the active embedder or builds payload-only points (`vector={}`) for a later `embedding` phase; `on_embed_failure="drop"|"keep_empty"` drops a failed embed entirely or keeps it payload-only for a retry. The defaults (`vectors="embed"`, `on_embed_failure="drop"`) are the core behavior.
 
-**Gate-in-callers rule:** the pure functions never gate. The core hook (`rabbithole_collects_document_images`) gates extraction on `is_multimodal_embedder_active`; the EffING engine extracts always and defers the decision to its `embedding` phase.
+**Gate-in-callers rule:** the pure functions never gate. The core hook (`rabbithole_collects_document_images`) gates extraction on `is_multimodal_embedder_active` but always strips the parser payload; the EffING engine extracts always and defers the decision to its `embedding` phase.
 
 **EffING-side dedup contract:** the EffING `reembed.py` image parts are expected to call the MmodING helpers instead of re-implementing them locally — `_store_empty_vectors` (reembed.py:200) image part → `build_image_points(vectors="empty")`; `_embed_phase` (reembed.py:258) image part → `build_image_points(vectors="embed", on_embed_failure="keep_empty")`; `_cleanup_orphan_images` (reembed.py:102) → `delete_source_image_files`.
 
