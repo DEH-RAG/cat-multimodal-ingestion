@@ -20,7 +20,7 @@ With the plugin disabled the core returns to upstream parity: no image collectio
 Multimodal parsers (e.g. the PLUS `UnstructuredParser` with `extract_image_block_to_payload=True`) attach each extracted image to the parsed `Document` metadata as `image_base64` + `image_mime_type`. The plugin:
 
 1. collects one entry per image **before chunking** — chunkers may drop that metadata — and **always** strips the transient `image_base64` payload from the documents, whatever the active embedder, so it never reaches the text chunk metadata nor the vector database;
-2. embeds the images with the active embedder's `embed_images`, dispatched through the `run_in_ingestion_executor` hook (the dedicated lane of the *efficient ingestion* plugin, with a fallback to `asyncio.to_thread`);
+2. embeds the images with the active embedder's `embed_images`, dispatched through the core's `cat.rabbit_hole.run_in_ingestion_executor` (the dedicated ingestion lane), with a fallback to `asyncio.to_thread` on cores that do not expose it;
 3. saves each image as a file named deterministically after its source (`<source-stem>_img_<index>_<sha256[:8]><ext>`), so the association between an image and the document it came from is recoverable by name;
 4. returns one `PointStruct` per image, carrying `image=True`, `image_file`, `source`, `when`, `hash` and, for chat-scoped ingestion, `chat_id`. The core appends them to the same collection as the text chunks.
 

@@ -156,19 +156,21 @@ async def delete_source_image_files(cat, collection_id: str, path: str, source_n
 
 
 async def _run_in_ingestion_executor(cat, func, *args):
-    """Run a heavy ingestion callable via the dedicated ingestion lane.
+    """Run a heavy ingestion callable on the core's dedicated ingestion lane.
 
-    Dispatches through the ``run_in_ingestion_executor`` hook (the
-    efficient_ingestion plugin provides the dedicated pool); falls back to the
-    default executor when no plugin provides it.
+    The phase-based core exposes ``cat.rabbit_hole.run_in_ingestion_executor`` as
+    a plain function; the old ``run_in_ingestion_executor`` hook was removed.
+    Fall back to the default executor when the function is unavailable (older
+    cores).
     """
+    try:
+        from cat.rabbit_hole import run_in_ingestion_executor as _execute
+    except ImportError:
+        _execute = None
+    if _execute is not None:
+        return await _execute(func, *args)
     task = func if not args else (lambda: func(*args))
-    result = await cat.plugin_manager.execute_hook(
-        "run_in_ingestion_executor", None, task, caller=cat,
-    )
-    if result is None:
-        result = await asyncio.to_thread(task)
-    return result
+    return await asyncio.to_thread(task)
 
 
 async def build_image_points(
